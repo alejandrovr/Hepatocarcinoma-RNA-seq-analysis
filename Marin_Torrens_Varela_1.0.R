@@ -2,7 +2,6 @@ library(SummarizedExperiment)
 library(edgeR)
 library(geneplotter)
 library(limma)
-#ver esto! sc$viral_hepatitis_serology
 sc<-readRDS("seLIHC.rds")
 dge<-DGEList(counts=assays(sc)$counts,genes=mcols(sc))
 assays(sc)$logCPM <- cpm(dge, log=TRUE, prior.count=0.5) #transform data into "Counts per Million reads"
@@ -157,7 +156,6 @@ library(sva)
 mod <- model.matrix(~ sc$type, colData(sc))
 mod0 <- model.matrix(~1, colData(sc))
 pv <- f.pvalue(assays(sc)$logCPM, mod, mod0)
-sum(p.adjust(pv, method="fdr") < 0.01) #multiple testing correction.
 
 hist(pv, main="", las=1) #distribution of pvalues
 
@@ -167,7 +165,6 @@ sv <- sva(assays(sc)$logCPM, mod, mod0) #analysis of surrogate variables.
 modsv <- cbind(mod, sv$sv)
 mod0sv <- cbind(mod0, sv$sv)
 pvsv <- f.pvalue(assays(sc)$logCPM, modsv, mod0sv)
-sum(p.adjust(pvsv, method="fdr") < 0.01)
 hist(pvsv, main="", las=1)
 ####################################################################################
 ####################################################################################
@@ -181,6 +178,7 @@ hist(pvsv, main="", las=1)
 ## new part 2
 
 # Fold changes
+FDRcutoff <- 0.05
 tumorExp <- rowMeans(logCPM[, sc$type == "tumor"])
 normalExp <- rowMeans(logCPM[, sc$type == "normal"])
 par(mfrow=c(1,2), mar=c(4, 4, 4, 4))
@@ -202,15 +200,6 @@ head(data.frame(Log2FC =ranking_neg$x, FC = 2^ranking_neg$x), n = 5)
 sc_fd <- sc[head(ranking$ix,n=10),] 
 dge_fd <- dge[head(ranking$ix,n=10),] 
 
-
-#plot tumor-normal boxplot distributions of this top 10 genes
-par(mfrow=c(4, 3), mar=c(2, 2, 2, 2))
-library(org.Hs.eg.db)
-symbolsIDS <- select(org.Hs.eg.db, keys = names(sc_fd), columns = c("SYMBOL"),keytype = "ENTREZID")[2]
-for (i in 1:10){
-  boxplot(cpm(dge_fd$counts[i,], log=TRUE, prior.count=0.5) ~ sc_fd$type, main=paste("Gene Symbol:",symbolsIDS[[1]][[i]],sep=" "))
-}
-
 # Adjust for unknown covariates
 sc$bcr_patient_barcode<-droplevels(sc$bcr_patient_barcode)
 par(mfrow=c(1,1))
@@ -219,8 +208,7 @@ mod0_sv2 <- model.matrix(~sc$bcr_patient_barcode, colData(sc))
 v<-voom(dge,mod_sv2,plot=TRUE)
 sv2 <- sva(v$E, mod = mod_sv2, mod0 = mod0_sv2)
 designsv <- cbind(mod_sv2, sv2$sv)
-#colnames(designsv) <- c(colnames(designsv)[1:2], paste0("SV", 1:sv2$n))
-colnames(designsv) <- c(colnames(designsv)[1:29], paste0("SV", 1:sv2$n)) #ONE PATIENT MISSING!
+colnames(designsv) <- c(colnames(designsv)[1:29], paste0("SV", 1:sv2$n))
 fit4<-lmFit(v,designsv)
 fit4<-eBayes(fit4)
 res4 <- decideTests(fit4, p.value = FDRcutoff)
@@ -236,19 +224,22 @@ abline(0,3,lwd=2,col="red")
 
 
 #boxplot of best p-values:
-sc_fd <- sc[head(ranking$ix,n=10),]
-dge_fd <- dge[head(ranking$ix,n=10),] 
-sc_pv<-sc[rownames(sc)==150572,]
-dge_pv
+#sc_fd <- sc[head(ranking$ix,n=10),]
+#dge_fd <- dge[head(ranking$ix,n=10),] 
+#sc_pv<-sc[rownames(sc)==150572,]
 par(mfrow=c(2,5))
 for (i in 1:10){
   boxplot(cpm(dge$counts[rownames(tt4)[i],], log=TRUE, prior.count=0.5) ~ sc$type,main=tt4$symbol[i],ylim=c(6,18),las=2, col=c('lightskyblue3','lightsalmon'))
 }
 
+#volcano plot
+par(mfrow = c(1, 1))
 
-# Diagnostic plots (volcanoplot)
-par(mfrow = c(1, 2), mar = c(4, 5, 3, 2))
-volcanoplot(fit4, coef = 2, highlight = 7, fit4$genes$symbol, las = 1) #checkbef
+plot(tt4$logFC, -log10(tt4$P.Value), xlab = "Log2 fold-change", ylab = "-log10 P-value", 
+     pch = ".", cex = 5, col = grey(0.75), cex.axis = 1.2, cex.lab = 1.5, las = 1)
+points(tt4[tt4$adj.P.Val < 0.05, "logFC"], -log10(tt4[tt4$adj.P.Val < 0.05, "P.Value"]), pch = ".", 
+       cex = 5, col = "red")
+abline(h = -log10(max(tt4[tt4$adj.P.Val < 0.05, "P.Value"])), col = grey(0.5), lty = 2)
 
 
 # Diagnostic plots (MA-plot)
@@ -322,7 +313,20 @@ library(xtable)
 xtab <- xtable(goresults, align = "l|c|r|r|r|r|r|p{3cm}|p{3cm}|")
 print(xtab, file = "goresults.html", type = "html")
 
-######### GSEA 
+###################################################################################################################
+###################################################################################################################
+###################################################################################################################
+###################################################################################################################
+
+#########       GENE SETS ANALYSIS       ##########################################################################
+
+###################################################################################################################
+###################################################################################################################
+###################################################################################################################
+###################################################################################################################
+###################################################################################################################
+###################################################################################################################
+###################################################################################################################
 
 library(GSEABase)
 library(GSVAdata)
@@ -345,20 +349,20 @@ Im <- Im[, colnames(Im) %in% rownames(sc)] #discard genes that are not in our st
 #                                               #
 #       BE AWARE THAT WE ARE MODIFYNG sc!!!     #
 #################################################
-                      #
-                      #
+                #
+                #
 
 
-sc <- sc[colnames(Im), ] 
-dim(sc)
-dge <- dge[colnames(Im), ]
-dim(dge)
+sctemp <- sc[colnames(Im), ] 
+dgetemp <- dge[colnames(Im), ]
 
 
 # We start the simple GSEA analysis by doing classical paired DE without calling any gene DE:
-design<-model.matrix(~sc$type+sc$bcr_patient_barcode,data=colData(sc)) # These step are the same we did before
-v <- voom(dge, design, plot = FALSE) #again, really necessary?
-mod0 <- model.matrix(~sc$bcr_patient_barcode, data=colData(sc))
+#We do this test again because now we have less genes -> improves multiple testing correction
+
+design<-model.matrix(~sctemp$type+sctemp$bcr_patient_barcode,data=colData(sctemp)) # These step are the same we did before
+v <- voom(dge, design, plot = FALSE)
+mod0 <- model.matrix(~sctemp$bcr_patient_barcode, data=colData(sctemp))
 sv <- sva(v$E, mod = design, mod0 = mod0)   
 design <- cbind(design, sv$sv)
 fit<-lmFit(v,design)
@@ -371,9 +375,8 @@ abline(0, 3.2,col="red")
 chroutliers <- tt$chr[abs(tt$t) > 10]
 text(qq$x[abs(qq$y) > 10], qq$y[abs(qq$y) > 10], chroutliers, pos = 4)
 
-# remove gene sets with less than 5 genes
-Im <- Im[rowSums(Im) >= 5, ]
-dim(Im)
+# remove gene sets with less than 5 genes and more than 200
+Im <- Im[rowSums(Im) >= 5 && rowSums(Im) <= 200 , ]
 
 #calculate the Z statistic
 #Get the t-statistic value of the genes in the incidence matrix
@@ -384,7 +387,6 @@ zS <- sqrt(rowSums(Im)) * (as.vector(Im %*% tGSgenes)/rowSums(Im))
 #rowSums(Im) number of genes present in one gene set
 #as.vector(Im %*% tGSgenes) gets only the t-statticstic of the genes present in the gene set of interes.(Im has 0 or 1, so if the gene is not present, its t-statisc gets * by 0)
 #/rowSums(Im) we divide by the number of genes to obtain the mean of t-statitcs for that gene set.
-length(zS)
 
 # qq plot of gene set Z-scores (gives a quick overview of how many promising gene sets could be DE)
 qqnorm(zS)
@@ -394,7 +396,7 @@ text(qq$x[abs(qq$y) > 10], qq$y[abs(qq$y) > 10], chroutliers, pos = 4)
 
 # first few gene sets with largest Z-score:
 rnkGS <- sort(abs(zS), decreasing = TRUE)
-head(rnkGS)
+
 
 # scatter plots for the sets with larger Z scores
 plotGS <- function(se, gs, pheno, ...) {
@@ -405,7 +407,7 @@ plotGS <- function(se, gs, pheno, ...) {
   exps2 <- rowMeans(assays(se)$logCPM[gs, idxSamples2])
   rng <- range(c(exps1, exps2))
   plot(exps1, exps2, pch = 21, col = "black", bg = "black", xlim = rng, ylim = rng, 
-       xlab = l[1], ylab = l[2], ...)
+       xlab = "logCPM(normal)", ylab = "logCPM(tumor)", ...)
   abline(a = 0, b = 1, lwd = 2, col = "red")
 }
 
@@ -416,8 +418,8 @@ genesGS2 <- colnames(Im)[which(Im[names(rnkGS)[2], ] == 1)]
 
 #plot the gene expression of the genes in the best ranked gene set spliting by type
 par(mfrow = c(1, 2), mar = c(4, 5, 3, 4))
-plotGS(sc, genesGS1, "type", main = names(rnkGS)[1], cex.lab = 2, las = 1)
-plotGS(sc, genesGS2, "type", main = names(rnkGS)[2], cex.lab = 2, las = 1)
+plotGS(sctemp, genesGS1, "type", main = names(ful)[1], cex.lab = 2, las = 1)
+plotGS(sctemp, genesGS2, "type", main = names(rnkGS)[2], cex.lab = 2, las = 1)
 
 # z-test
 pv <- pmin(pnorm(zS), 1 - pnorm(zS)) 
@@ -432,9 +434,9 @@ pv <- pmin(pnorm(zS), 1 - pnorm(zS))
 
 sum(pv < 0.05)
 pvadj <- p.adjust(pv, method = "fdr")
+pvadj<-sort(pvadj)
 DEgs <- names(pvadj)[which(pvadj < 0.05)] #get the gene set names that have a pvalue < 0.05
-length(DEgs)
-head(DEgs, n = 3)
+
 
 # Chi square test, main difference is that now we do not lose those gene set that have a equal number of
 #of upregulated and downregulated genes (before: we calculated the mean of t-statistic which can result in zero. Now: sum((x - mean(x))^2) )
@@ -442,25 +444,33 @@ library(Category)
 xS <- applyByCategory(tGSgenes, Im, function(x) (sum((x - mean(x))^2) - (length(x) - 1))/(2 * (length(x) - 1)))
 rnkGS <- sort(abs(xS), decreasing = TRUE) #results from Chi-Square test
 pv <- pmin(pnorm(xS), 1 - pnorm(xS))
-pvadj <- p.adjust(pv)
-DEgsByScale <- names(pvadj)[which(pvadj < 0.1)]
-#length(DEgsByScale)
-#length(intersect(DEgs, DEgsByScale)) #how many genes appear to be significant both with zscore and chisqueare?
-#setdiff(DEgsByScale, DEgs) #which ones are different?
+pvadj2 <- p.adjust(pv)
+pvadj2<-sort(pvadj2)
+DEgsByScale <- names(pvadj2)[which(pvadj2 < 0.05)]
 
+full_pv <- pvadj2
+for (i in seq(length(pvadj))) {
+  if ((names(pvadj[i]) %in% names(pvadj2))==FALSE) {
+    full_pv <- c(full_pv,pvadj[i])
+  } else if (((names(pvadj[i]) %in% names(pvadj2))==TRUE) && (pvadj2[[names(pvadj[i])]]<pvadj[[i]])) {
+    full_pv[(names(pvadj[i]))] <- pvadj[i]
+  }
+}
+
+full_pv<-sort(full_pv)
 
 #get genes from best ranked gene sets according to Chi-Square punctuation.
-topgs1genes <- colnames(Im)[which(Im[names(rnkGS)[1], ] == 1)]
-topgs2genes <- colnames(Im)[which(Im[names(rnkGS)[2], ] == 1)]
-topgs3genes <- colnames(Im)[which(Im[names(rnkGS)[3], ] == 1)]
-par(mfrow = c(1, 3))
-plotGS(sc, topgs1genes, "type", main = names(rnkGS)[1], cex.lab = 2, las = 1)
-plotGS(sc, topgs2genes, "type", main = names(rnkGS)[2], cex.lab = 2, las = 1)
-plotGS(sc, topgs3genes, "type", main = names(rnkGS)[3], cex.lab = 2, las = 1)
+topgs1genes <- colnames(Im)[which(Im[names(full_pv)[1], ] == 1)]
+topgs2genes <- colnames(Im)[which(Im[names(full_pv)[2], ] == 1)]
+topgs3genes <-colnames(Im)[which(Im[names(full_pv)[3], ] == 1)]
+par(mfrow = c(1, 2))
+plotGS(sc, topgs1genes, "type", main = names(full_pv[1]), cex.lab = 2, las = 1)
+plotGS(sc, topgs2genes, "type", main = names(full_pv)[2], cex.lab = 2, las = 1)
+
 
 # Overlaps
 library(GSVA)
-gsov <- computeGeneSetsOverlap(gsc[DEgs], rownames(sc)) # put to 0 genes not present in dataset from sets
+gsov <- computeGeneSetsOverlap(gsc[fullDEgs], rownames(sctemp)) # put to 0 genes not present in dataset from sets
 trimask <- upper.tri(gsov)
 rnkOv <- data.frame(gs1 = row(gsov)[trimask], gs2 = col(gsov)[trimask], ov = gsov[trimask])
 rnkOv <- rnkOv[order(rnkOv$ov, decreasing = TRUE), ] # order values (decreasing)
@@ -468,26 +478,6 @@ rnkOv$gs1 <- rownames(gsov)[rnkOv$gs1]
 rnkOv$gs2 <- rownames(gsov)[rnkOv$gs2]
 sum(rnkOv$ov == 1)  ## how many pairs of gene sets are identical?
 sum(rnkOv$ov < 0.2)  ## how many pairs of gene sets share less than 20% of the genes?
-
-
-# select sets with overlap < 0.2
-badlist <- c()
-goodlist <- c()
-for (i in dim(gsov)[1]:1) {
-  if (i %in% badlist == FALSE) {
-    goodlist <- c(goodlist,i)
-    for (j in 1:(i-1)) {
-      if (gsov[j,i] > 0.2) {
-        badlist <- c(badlist,j)
-      }
-    }
-    badlist <- unique(badlist)
-  }
-}
-c2BroadSets <- c2BroadSets[goodlist]
-
-#Overlap solved
-
 
 #check if the best ranked gene sets are overlaped for Chi square and Zscore results.
 
@@ -499,36 +489,36 @@ ZscoreNotOv<-intersect(names(c2BroadSets),DEgs)
 
 #intersect(chisquareNotOv,ZscoreNotOv)
 #setdiff(chisquareNotOv,ZscoreNotOv)
-union(chisquareNotOv,ZscoreNotOv)
+
 
 #GSVA analysis #########################################################3
 
 library(GSVA)
-GSexpr <- gsva(assays(sc)$counts, gsc, rnaseq = TRUE, min.sz = 5, max.sz = 300, verbose = FALSE)$es.obs
+#GSexpr <- gsva(assays(sc)$counts, gsc, rnaseq = TRUE, min.sz = 10, max.sz = 300, verbose = FALSE,method="ssgsea")$es.obs
+GSexpr <- gsva(assays(sc)$counts, gsc, rnaseq = TRUE, min.sz = 25, max.sz = 300, verbose = FALSE,kernel=FALSE)
 dim(GSexpr) # gene sets x enrichment score (ES)
 
-#
+
 mod<-model.matrix(~sc$type+sc$bcr_patient_barcode,data=colData(sc))
 mod0 <- model.matrix(~sc$bcr_patient_barcode, colData(sc))
 svaobj <- sva(GSexpr,mod= mod,mod0= mod0) # Not working
 modSVs <- cbind(mod, svaobj$sv)
 fit <- lmFit(GSexpr, modSVs)
 fit <- eBayes(fit)
-tt <- topTable(fit, coef = 2, n = Inf)
-DEgs <- rownames(tt[tt$adj.P.Val < 0.05, , drop = FALSE])
-DEgs
-#
+ttgs <- topTable(fit, coef = 2, n = Inf)
+DEgs2 <- rownames(ttgs[ttgs$adj.P.Val < 0.05, , drop = FALSE])
 
-par(mfrow = c(1, 2))
-boxplot(GSexpr["KEGG_JAK_STAT_SIGNALING_PATHWAY", ] ~ sc$type, main = "KEGG_GLYCOLYSIS_GLUCONEOGENESIS", las = 1, cex.axis = 2)
-boxplot(GSexpr["KEGG_CITRATE_CYCLE_TCA_CYCLE", ] ~ sc$type, main = "KEGG_CITRATE_CYCLE_TCA_CYCLE", las = 1, cex.axis = 2)
+par(mfrow=c(2,5))
+for (i in 1:10){
+  boxplot(GSexpr[DEgs2[i], ] ~ sc$type,main=DEgs2[i],las=2, cex.main=0.6, col=c('lightskyblue3','lightsalmon'))
+}
 
 par(mfrow = c(1, 1))
 
 plot(tt$logFC, -log10(tt$P.Value), xlab = "Log2 fold-change", ylab = "-log10 P-value", 
      pch = ".", cex = 5, col = grey(0.75), cex.axis = 1.2, cex.lab = 1.5, las = 1)
-points(tt[tt$adj.P.Val < 0.01, "logFC"], -log10(tt[tt$adj.P.Val < 0.01, "P.Value"]), pch = ".", 
+points(tt[tt$adj.P.Val < 0.05, "logFC"], -log10(tt[tt$adj.P.Val < 0.05, "P.Value"]), pch = ".", 
        cex = 5, col = "red")
-abline(h = -log10(max(tt[tt$adj.P.Val < 0.01, "P.Value"])), col = grey(0.5), lty = 2)
+abline(h = -log10(max(tt[tt$adj.P.Val < 0.05, "P.Value"])), col = grey(0.5), lty = 2)
 
 
