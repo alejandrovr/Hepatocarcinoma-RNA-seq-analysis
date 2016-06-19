@@ -157,15 +157,15 @@ mod <- model.matrix(~ sc$type, colData(sc))
 mod0 <- model.matrix(~1, colData(sc))
 pv <- f.pvalue(assays(sc)$logCPM, mod, mod0)
 
-hist(pv, main="", las=1) #distribution of pvalues
+par(mfrow=c(1,2),mar=c(5,4,4,5))
 
+hist(pv, las=1, main="p-value distribution without sva", xlab="p-value",xlim=c(0,1), las=1,ylim = c(0,7000)) #distribution of pvalues
 sv <- sva(assays(sc)$logCPM, mod, mod0) #analysis of surrogate variables.
-
 #do again the analysis taking the founded surrogates into acount
 modsv <- cbind(mod, sv$sv)
 mod0sv <- cbind(mod0, sv$sv)
 pvsv <- f.pvalue(assays(sc)$logCPM, modsv, mod0sv)
-hist(pvsv, main="", las=1)
+hist(pvsv, las=1,main="p-value distribution with sva",xlab="p-value",xlim=c(0,1), las=1,ylim = c(0,7000))
 ####################################################################################
 ####################################################################################
 ####################################################################################
@@ -190,11 +190,6 @@ lines(c(1:15),rep(0,15), col="red")
 # top 10 DE
 log2fc <- tumorExp - normalExp #as tumorExp and normalExp are in log scale, their substraction is equal to compute the foldchange.
 ranking <- sort(abs(log2fc), decreasing = TRUE, index.return = TRUE)
-# ranking top5 sub + top5 over
-ranking_pos <- sort(log2fc, decreasing = TRUE, index.return = TRUE)
-head(data.frame(Log2FC =ranking_pos$x, FC = 2^ranking_pos$x), n = 5)
-ranking_neg <- sort(log2fc, decreasing = FALSE, index.return = TRUE)
-head(data.frame(Log2FC =ranking_neg$x, FC = 2^ranking_neg$x), n = 5)
 #ranking$x has the list of differences ordered by values, ranking$ix only has the indexes ordered according to the difference values.
 #head(data.frame(Log2FC = log2fc[ranking$x], FC = 2^log2fc[ranking$x]), n = 10)
 sc_fd <- sc[head(ranking$ix,n=10),] 
@@ -220,13 +215,10 @@ length(DEgenes) #number of DE genes.
 par(mfrow = c(1, 2), mar = c(4, 5, 2, 2))
 hist(tt4$P.Value, xlab = "P-values", main = "", las = 1)
 qqt(fit4$t[, 2], df = fit4$df.prior + fit4$df.residual, main = "", pch = ".", cex = 3)
-abline(0,3,lwd=2,col="red")
+abline(0,1,lwd=2,col="red")
 
 
 #boxplot of best p-values:
-#sc_fd <- sc[head(ranking$ix,n=10),]
-#dge_fd <- dge[head(ranking$ix,n=10),] 
-#sc_pv<-sc[rownames(sc)==150572,]
 par(mfrow=c(2,5))
 for (i in 1:10){
   boxplot(cpm(dge$counts[rownames(tt4)[i],], log=TRUE, prior.count=0.5) ~ sc$type,main=tt4$symbol[i],ylim=c(6,18),las=2, col=c('lightskyblue3','lightsalmon'))
@@ -262,19 +254,6 @@ ttconmales <- topTable(fit6, coef = "men", n = Inf)
 ttconfemales <- topTable(fit6, coef = "women", n = Inf)
 res <- decideTests(fit6, p.value = 0.05)
 vennDiagram(res,circle.col=c("red","blue"))
-
-# Female - Male DE
-mod1<-model.matrix(~sc$gender,data=colData(sc))
-mod01 <- model.matrix(~ 1, colData(sc))
-v2<-voom(dge,mod1)
-sv20 <- sva(v2$E, mod = mod1, mod0 = mod01)
-designsv1 <- cbind(mod1, sv20$sv)
-colnames(designsv1) <- c(colnames(designsv1)[1:2], paste0("SV", 1:sv20$n))
-fitx<-lmFit(v2,designsv1)
-fitx<-eBayes(fitx)
-
-resx <- decideTests(fitx, p.value = FDRcutoff)
-#summary(resx)
 
 
 ##### Functional annotations
@@ -320,18 +299,9 @@ print(xtab, file = "goresults.html", type = "html")
 
 #########       GENE SETS ANALYSIS       ##########################################################################
 
-###################################################################################################################
-###################################################################################################################
-###################################################################################################################
-###################################################################################################################
-###################################################################################################################
-###################################################################################################################
-###################################################################################################################
-
 library(GSEABase)
 library(GSVAdata)
 data(c2BroadSets)
-head(names(c2BroadSets))
 #select only three gene collections: KEGG,REACTOME and BIOCARTA
 c2BroadSets <- c2BroadSets[c(grep("^KEGG", names(c2BroadSets)),
                              grep("^REACTOME", names(c2BroadSets)), grep("^BIOCARTA", names(c2BroadSets)))]
@@ -344,18 +314,8 @@ Im <- Im[, colnames(Im) %in% rownames(sc)] #discard genes that are not in our st
 #discard genes from our original study set that are not included in the c2BroadSets library
 #reducing the number of genes diminishes multiple test correction problems.
 
-#################################################
-#                     WARNING:                  #
-#                                               #
-#       BE AWARE THAT WE ARE MODIFYNG sc!!!     #
-#################################################
-                #
-                #
-
-
 sctemp <- sc[colnames(Im), ] 
 dgetemp <- dge[colnames(Im), ]
-
 
 # We start the simple GSEA analysis by doing classical paired DE without calling any gene DE:
 #We do this test again because now we have less genes -> improves multiple testing correction
@@ -371,7 +331,7 @@ tt <- topTable(fit, coef = 2, n = Inf)
 
 # qq-plot
 qq <- qqnorm(tt$t)
-abline(0, 3.2,col="red")
+abline(0, 1,col="red")
 chroutliers <- tt$chr[abs(tt$t) > 10]
 text(qq$x[abs(qq$y) > 10], qq$y[abs(qq$y) > 10], chroutliers, pos = 4)
 
@@ -385,18 +345,17 @@ tGSgenes <- tt[match(colnames(Im), rownames(tt)), "t"] #tt[corresponding positio
 zS <- sqrt(rowSums(Im)) * (as.vector(Im %*% tGSgenes)/rowSums(Im))
 #zS=media de t-statistico para o gen set de interes*numero de genes no gene set
 #rowSums(Im) number of genes present in one gene set
-#as.vector(Im %*% tGSgenes) gets only the t-statticstic of the genes present in the gene set of interes.(Im has 0 or 1, so if the gene is not present, its t-statisc gets * by 0)
+#as.vector(Im %*% tGSgenes) gets only the t-staticstic of the genes present in the gene set of interes.(Im has 0 or 1, so if the gene is not present, its t-statisc gets * by 0)
 #/rowSums(Im) we divide by the number of genes to obtain the mean of t-statitcs for that gene set.
 
 # qq plot of gene set Z-scores (gives a quick overview of how many promising gene sets could be DE)
 qqnorm(zS)
-abline(-1.5, 4.5,col="red")
+abline(-1.5, 0,col="red")
 chroutliers <- tt$chr[abs(tt$t) > 10]
 text(qq$x[abs(qq$y) > 10], qq$y[abs(qq$y) > 10], chroutliers, pos = 4)
 
 # first few gene sets with largest Z-score:
 rnkGS <- sort(abs(zS), decreasing = TRUE)
-
 
 # scatter plots for the sets with larger Z scores
 plotGS <- function(se, gs, pheno, ...) {
@@ -428,10 +387,6 @@ pv <- pmin(pnorm(zS), 1 - pnorm(zS))
 #mean keeps increasing despite that you are getting far apart from the mean.
 #that is why we need to pick the minimun between pnorm(zS) and 1 - pnorm(zS).
 
-#Example: pnorm(1,mean=2,sd=1) vs pnorm(2,mean=2,sd=1) vs pnorm(3,mean=2,sd=1)
-# 0.1586553 vs 0.5 vs 0.8413447. Now, 1-0.8413447=0.1586553 !!!!!
-
-
 sum(pv < 0.05)
 pvadj <- p.adjust(pv, method = "fdr")
 pvadj<-sort(pvadj)
@@ -441,13 +396,24 @@ DEgs <- names(pvadj)[which(pvadj < 0.05)] #get the gene set names that have a pv
 # Chi square test, main difference is that now we do not lose those gene set that have a equal number of
 #of upregulated and downregulated genes (before: we calculated the mean of t-statistic which can result in zero. Now: sum((x - mean(x))^2) )
 library(Category)
-xS <- applyByCategory(tGSgenes, Im, function(x) (sum((x - mean(x))^2) - (length(x) - 1))/(2 * (length(x) - 1)))
+Im2 <- Im
+Im2 <- Im2[rowSums(Im2) >= 20, ]
+tGSgenes2 <- tt[match(colnames(Im2), rownames(tt)), "t"] 
+xS <- applyByCategory(tGSgenes2, Im2, function(x) (sum((x - mean(x))^2) - (length(x) - 1))/(2 * (length(x) - 1)))
 rnkGS <- sort(abs(xS), decreasing = TRUE) #results from Chi-Square test
 pv <- pmin(pnorm(xS), 1 - pnorm(xS))
 pvadj2 <- p.adjust(pv)
 pvadj2<-sort(pvadj2)
 DEgsByScale <- names(pvadj2)[which(pvadj2 < 0.05)]
 
+#get genes from best ranked gene sets according to Chi-Square punctuation.
+topchi1genes <- colnames(Im2)[which(Im2[names(pvadj2)[1], ] == 1)]
+topchi2genes <- colnames(Im2)[which(Im2[names(pvadj2)[2], ] == 1)]
+par(mfrow = c(1, 2))
+plotGS(sc, topchi1genes, "type", main = names(pvadj2[1]), cex.lab = 2, las = 1)
+plotGS(sc, topchi2genes, "type", main = names(pvadj2[2]), cex.lab = 2, las = 1)
+
+# union z-score and Chi square with smallest p-values
 full_pv <- pvadj2
 for (i in seq(length(pvadj))) {
   if ((names(pvadj[i]) %in% names(pvadj2))==FALSE) {
@@ -459,11 +425,10 @@ for (i in seq(length(pvadj))) {
 
 full_pv<-sort(full_pv)
 
-#get genes from best ranked gene sets according to Chi-Square punctuation.
+#get genes from best ranked gene sets according to both tests union.
 topgs1genes <- colnames(Im)[which(Im[names(full_pv)[1], ] == 1)]
 topgs2genes <- colnames(Im)[which(Im[names(full_pv)[2], ] == 1)]
-topgs3genes <-colnames(Im)[which(Im[names(full_pv)[3], ] == 1)]
-par(mfrow = c(1, 2))
+
 plotGS(sc, topgs1genes, "type", main = names(full_pv[1]), cex.lab = 2, las = 1)
 plotGS(sc, topgs2genes, "type", main = names(full_pv)[2], cex.lab = 2, las = 1)
 
@@ -478,17 +443,6 @@ rnkOv$gs1 <- rownames(gsov)[rnkOv$gs1]
 rnkOv$gs2 <- rownames(gsov)[rnkOv$gs2]
 sum(rnkOv$ov == 1)  ## how many pairs of gene sets are identical?
 sum(rnkOv$ov < 0.2)  ## how many pairs of gene sets share less than 20% of the genes?
-
-#check if the best ranked gene sets are overlaped for Chi square and Zscore results.
-
-#For chi square:
-chisquareNotOv<-intersect(names(c2BroadSets),DEgsByScale)
-
-#For Z-scores:
-ZscoreNotOv<-intersect(names(c2BroadSets),DEgs)
-
-#intersect(chisquareNotOv,ZscoreNotOv)
-#setdiff(chisquareNotOv,ZscoreNotOv)
 
 
 #GSVA analysis #########################################################3
@@ -512,13 +466,3 @@ par(mfrow=c(2,5))
 for (i in 1:10){
   boxplot(GSexpr[DEgs2[i], ] ~ sc$type,main=DEgs2[i],las=2, cex.main=0.6, col=c('lightskyblue3','lightsalmon'))
 }
-
-par(mfrow = c(1, 1))
-
-plot(tt$logFC, -log10(tt$P.Value), xlab = "Log2 fold-change", ylab = "-log10 P-value", 
-     pch = ".", cex = 5, col = grey(0.75), cex.axis = 1.2, cex.lab = 1.5, las = 1)
-points(tt[tt$adj.P.Val < 0.05, "logFC"], -log10(tt[tt$adj.P.Val < 0.05, "P.Value"]), pch = ".", 
-       cex = 5, col = "red")
-abline(h = -log10(max(tt[tt$adj.P.Val < 0.05, "P.Value"])), col = grey(0.5), lty = 2)
-
-
