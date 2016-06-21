@@ -1,0 +1,743 @@
+---
+title: "Supplementary material"
+output: html_document
+---
+```{r setup, cache=FALSE, echo=FALSE, results='asis'}
+dumpcssfile <- function(fname) {
+  paste(c('<style type="text/css">', readLines(fname), '</style>\n'),
+        collapse="\n")
+}
+
+library(knitr)
+
+opts_chunk$set(cache=TRUE,
+               autodep=TRUE,
+               fig.align="center",
+               comment="")
+
+knit_hooks$set(error=function(x, options) stop(x),
+               fig.cap=function(before, options, envir) {
+                 if (!before) {
+                   paste0('<p class="caption">', options$fig.cap, "</p>")
+                 }
+               })
+
+cat(dumpcssfile(file.path("css", "ieo.css")))
+```
+# Analysis of a TCGA RNA-seq data set on Liver Hepatocellular Carcinoma
+
+### A. Varela, M. Torrens & A. Marín
+
+## Introduction
+Hepatocellular carcinoma arises in the hepatocytes, the cells that make up most of the liver. This type of cancer occurs more often in men than women. It is usually diagnosed in people age 50 or older and it accounts for most liver cancers. 
+
+The cause of hepatocellular carcinoma is long-term damage and scarring of the liver (cirrhosis). The major risk factors that can cause cirrhosis are: alcohol abuse, autoimmune diseases of the liver, hepatitis B or C virus infection and chronic liver inflam
+
+This cancer is the third leading cause of cancer-related deaths.
+## Data import
+
+We start visualizing the structure of the experiment data.
+
+```{r, message=FALSE,warning=FALSE}
+library(SummarizedExperiment)
+
+sc <- readRDS(file.path("data","seLIHC.rds"))
+sc
+```
+Then, we create a DGEList object and compute its $\log_2$ CPM values of expression to ease data manipulation. $\log_2$ CPM units separate better high and low expression than raw counts or non-logged CPM
+
+
+```{r ,message=FALSE,warning=FALSE}
+library(edgeR)
+
+dge <- DGEList(counts=assays(sc)$counts, genes=mcols(sc))
+assays(sc)$logCPM <- cpm(dge, log=TRUE, prior.count=0.5)
+```
+## Quality assessment and normalization
+
+### Data filtering
+
+Let's examine the library sizes in terms of total number of sequence read counts per sample. 
+Figure S1 below shows library sizes per sample in increasing order:
+
+```{r libsizes, echo=FALSE, message=FALSE,warning=FALSE, out.width="600px", fig.cap="\\label{fig:col.data.analysis} Figure S1: Library sizes in increasing order."}
+ord <- order(dge$sample$lib.size/1e6)
+barplot(dge$sample$lib.size[ord]/1e6, las=1, ylab="Millions of reads",
+        xlab="Samples", col=c("blue", "red")[(sc$type[ord] == "tumor") + 1])
+legend("topleft", c("tumor", "normal"), fill=c("red", "blue"), inset=0.01)
+```
+
+This figure reveals relevant differences in sequencing depth between samples. We will filter the samples in order to work only with those with a coverage larger than 40 million reads, since samples whose depth is substantially lower than the rest are not reliable as a little bias can have a great effect.
+
+```{r ,message=FALSE,warning=FALSE,}
+libmask<-dge$samples$lib.size>40000000
+sc<-sc[,libmask]
+dge<-dge[,libmask]
+```
+
+Afterwards, we will apply a second filter that will select only paired data samples, which means pairs of tumor and normal samples with the same patient barcode (thus substracted from the same individual). 
+Working with paired data eliminates a great source of variability, allowing us to increase our ability to detect differences in our samples due to the fact that they are tumoral or normal. This also avoids some biases, as the tumor and normal condition can not desequilibrated across the study population for some factors. That is, one can not have more tumor samples than normal samples for a given ethnicitiy, which could result in bias.
+
+```{r , message=FALSE,warning=FALSE,}
+masknames<-rep(FALSE,dim(sc)[2])
+count=1
+for  (i in sc$bcr_patient_barcode){
+    count2=0
+    for (j in sc$bcr_patient_barcode) {
+        if (identical(i,j) && !is.na(i)){
+            count2=count2+1
+            if (count2==2){
+                masknames[count]=TRUE
+            }
+        }
+    }
+    count=count+1
+}
+sc<-sc[,masknames]
+dge<-dge[,masknames]
+```
+
+Figure S2 shows the final library sizes after the dataset has been filtered:
+
+```{r libsizes2, echo=FALSE, out.width="600px", message=FALSE,warning=FALSE, fig.cap="Figure S2: Library sizes in filtered data."}
+ord <- order(dge$sample$lib.size/1e6)
+barplot(dge$sample$lib.size[ord]/1e6, las=1, ylab="Millions of reads",
+        xlab="Samples", col=c("blue", "red")[(sc$type[ord] == "tumor") + 1])
+legend("topleft", c("tumor", "normal"), fill=c("red", "blue"), inset=0.01)
+```
+As can be seen, there is no clear bias in the coverage for normal and tumor samples.
+
+### Distribution of expression levels among samples
+
+Let's look at the distribution of expression values per sample in terms of logarithmic CPM units. 
+
+```{r distRawExp,message=FALSE,warning=FALSE, fig.height=4, fig.width=10, out.width="800px", fig.cap="Figure S3: Non-parametric density distribution of expression profiles per sample."}
+library(geneplotter)
+par(mfrow=c(1, 2))
+multidensity(as.list(as.data.frame(assays(sc[, sc$type == "tumor"])$logCPM)),
+             xlab="log 2 CPM", legend=NULL, main="Tumor samples", las=1)
+multidensity(as.list(as.data.frame(assays(sc[, sc$type == "normal"])$logCPM)),
+             xlab="log 2 CPM", legend=NULL, main="Normal samples", las=1)
+```
+
+We do not appreciate substantial differences between the samples in the distribution of expression values.
+
+### Distribution of expression levels among genes
+
+Let's calculate now the average expression per gene through all the samples. Figure S4 shows the distribution of those values across genes.
+
+```{r exprdist,message=FALSE,warning=FALSE, out.width="400px", fig.cap="Figure S4: Distribution of average expression level per gene."}
+avgexp <- rowMeans(assays(sc)$logCPM)
+hist(avgexp, xlab="log2 CPM", main="", las=1)
+abline(v=1, col="red", lwd=2)
+```
+
+### Filtering of lowly-expressed genes
+
+In the light of this plot, we consider a cutoff of 1 log CPM unit as minimum expression level to select only genes being expressed across samples. Using this cutoff we will proceed to filter out lowly-expressed genes.
+
+```{r,message=FALSE,warning=FALSE,}
+mask <- avgexp > 1
+dim(sc)
+sc <- sc[mask, ]
+dim(sc)
+dge <- dge[mask, ]
+```
+
+### Normalization
+
+We calculate now the normalization factors on the filtered expression data set. This normalization accounts for sample-specific effects, which makes the different samples comparable.
+
+```{r,message=FALSE,warning=FALSE,}
+dge <- calcNormFactors(dge)
+```
+
+Then, we replace the raw $\log_2$ CPM units in the corresponding assay element of the `SummarizedExperiment`
+object by the normalized ones.
+
+```{r,message=FALSE,warning=FALSE,}
+assays(sc)$logCPM <- cpm(dge, log=TRUE, prior.count=0.5)
+```
+
+### MA-plots
+
+We examine now the MA-plots of the normalized expression profiles, which allow us to detect possible expression-level dependent biases. We will first look at the tumor samples.
+
+```{r maPlotsTumor, message=FALSE,warning=FALSE, fig.height=18, fig.width=6, dpi=100, echo=FALSE, fig.cap="Figure S5: MA-plots of the tumor samples."}
+par(mfrow=c(10, 3), mar=c(1,1,1,1))
+sctmp <- sc[, sc$type == "tumor"]
+dgetmp <- dge[, sc$type == "tumor"]
+for (i in 1:ncol(sctmp)) {
+  A <- rowMeans(assays(sctmp)$logCPM)
+  M <- assays(sctmp)$logCPM[, i] - A
+  samplename <- as.character(sctmp$bcr_patient_barcode[i])
+  smoothScatter(A, M, main=samplename, las=1)
+  abline(h=0, col="blue", lwd=2)
+  lo <- lowess(M ~ A)
+  lines(lo$x, lo$y, col="red", lwd=2)
+}
+```
+
+The differential expression shouldn't be related with whether the gene is highly or lowly expressed on average, therefore these deviations can only be due to technical problems. Therefore, the samples where this happens cannot be trusted and should be eliminated. In our results there is a sample in which this problem is especially evident: the sample from patient "TCGA-ES-A2HT". Therefore, we will not use this sample neither the paired normal one in the following analysis.
+
+```{r,message=FALSE,warning=FALSE,}
+namemask2<-sc$bcr_patient_barcode!="TCGA-ES-A2HT"
+dim(sc)
+sc<-sc[,namemask2]
+dim(sc)
+dge<-dge[,namemask2]
+```
+
+Now we will look at the normal samples
+
+```{r maPlotsNormal, message=FALSE,warning=FALSE,fig.height=18, fig.width=6, dpi=100, echo=FALSE, fig.cap="Figure S6: MA-plots of the normal samples."}
+par(mfrow=c(10, 3), mar=c(1, 1, 1, 1))
+sctmp <- sc[, sc$type == "normal"]
+dgetmp <- dge[, sc$type == "normal"]
+for (i in 1:ncol(sctmp)) {
+  A <- rowMeans(assays(sctmp)$logCPM)
+  M <- assays(sctmp)$logCPM[, i] - A
+  samplename <- as.character(sctmp$bcr_patient_barcode[i])
+  smoothScatter(A, M, main=samplename, las=1)
+  abline(h=0, col="blue", lwd=2)
+  lo <- lowess(M ~ A)
+  lines(lo$x, lo$y, col="red", lwd=2)
+}
+```
+
+We do not observe important expression-level dependent biases among the normal samples.
+
+### Batch identification
+
+We will search now for potential surrogate of batch effect indicators. We will derive different elements of the TCGA barcode and examine their distribution
+across samples.
+
+```{r,message=FALSE,warning=FALSE,}
+tss <- substr(colnames(sc), 6, 7)
+table(tss)
+center <- substr(colnames(sc), 27, 28)
+table(center)
+plate <- substr(colnames(sc), 22, 25)
+table(plate)
+portionanalyte <- substr(colnames(sc), 18, 20)
+table(portionanalyte)
+samplevial <- substr(colnames(sc), 14, 16)
+table(samplevial)
+```
+
+As we have commented before in this discussion, the fact of choosing paired data creates an almost perfectly balanced dataset for all these possible batches. 
+
+From this information we can make the following observations:
+
+  * All samples were sequenced at the same center
+    
+  * There are six possible plates frow which the sample can come from.
+  
+  * There are three portion analyte sets.
+
+  * Samples were collected across different tissue source sites (TSS).
+  
+
+We are going to use the TSS as surrogate of batch effect indicator. Considering our outcome of interest as molecular changes between sample types, tumor vs. normal, we will examine now the cross-classification of this outcome with TSS.
+
+```{r,warning=FALSE,}
+table(data.frame(TYPE=sc$type, TSS=tss))
+```
+
+
+We examine now how samples group together by hierarchical clustering and multidimensional scaling, annotating the outcome of interest and the tss of each sample. We calculate again log CPM values with a higher prior count to moderate extreme fold-changes produced by low counts. 
+
+The resulting dendrogram is shown in Figure S7.
+
+```{r sampleClustering,message=FALSE,warning=FALSE, fig.height=7, fig.width=14, dpi=100, echo=TRUE, fig.cap="Figure S7: Hierarchical clustering of the samples."}
+par(mfrow=c(1,1))
+logCPM <- cpm(dge, log=TRUE, prior.count=3)
+d <- as.dist(1-cor(logCPM, method="spearman"))
+sampleClustering <- hclust(d)
+batch <- as.integer(factor(tss))
+sampleDendrogram <- as.dendrogram(sampleClustering, hang=0.1)
+names(batch) <- colnames(sc)
+outcome <- paste(substr(colnames(sc), 9, 12), as.character(sc$type), sep="-")
+names(outcome) <- colnames(sc)
+sampleDendrogram <- dendrapply(sampleDendrogram,
+                               function(x, batch, labels) {
+                                 if (is.leaf(x)) {
+                                   attr(x, "nodePar") <- list(lab.col=as.vector(batch[attr(x, "label")]))
+                                   attr(x, "label") <- as.vector(labels[attr(x, "label")])
+                                 }
+                                 x
+                               }, batch, outcome)
+plot(sampleDendrogram, main="Hierarchical clustering of samples")
+legend("topright", paste("Batch", sort(unique(batch)), levels(factor(tss))), fill=sort(unique(batch)))
+```
+
+We can observe that samples cluster primarily by sample type, tumor or normal. TSS does not seem to have a relevant effect among the tumoral or normal samples. This absence of batch effects is most probably due to the samples being paired.
+
+In Figure S8 we show the corresponding MDS plot. 
+
+```{r mds, message=FALSE,warning=FALSE,fig.height=7, fig.width=14, dpi=100, echo=TRUE, fig.cap="Figure S8: Multidimensional scaling plot of the samples."}
+plotMDS(dge, labels=outcome, col=batch)
+legend("bottomleft", paste("Batch", sort(unique(batch)), levels(factor(tss))),
+       fill=sort(unique(batch)), inset=0.05)
+```
+
+Here we see more clearly that the first source of variation separates tumor from normal samples. Also, it can be seen that tumor samples differ more between each other than normal ones, which matches the expected: there is a specific expression pattern that allows cells to work normally, while there can be many abnormalities which lead to tumoral cells.
+
+
+Sample with name "TCGA-BC-A10X" seems aberrant according to the Hierarchical clustering, so we discard it.
+```{r,message=FALSE,warning=FALSE,}
+namemask2<-sc$bcr_patient_barcode!="TCGA-BC-A10X"
+sc<-sc[,namemask2]
+dge<-dge[,namemask2]
+```
+
+
+The final balance between male and female samples (not individuals) is:
+
+```{r,warning=FALSE,}
+table(sc$gender)
+```
+
+## Differential expression
+
+We perform a simple examination of expression changes and their associated p-values
+using the R/Bioconductor package [sva](http://bioconductor.org/packages/sva).
+
+```{r,message=FALSE,results='hide',warning=FALSE,}
+library(sva)
+mod <- model.matrix(~ sc$type, colData(sc))
+mod0 <- model.matrix(~ 1, colData(sc))
+pv <- f.pvalue(assays(sc)$logCPM, mod, mod0)
+sum(p.adjust(pv, method="fdr") < 0.05) #adjust for multiple testing
+```
+
+There are `r sum(p.adjust(pv, method="fdr") < 0.05)` genes changing significantly their expression at FDR < 1%. In Figure S9 below we show the distribution of the resulting p-values.
+
+
+Now, let's estimate surrogate variables using the `sva()` function.
+
+```{r,message=FALSE,results='hide',warning=FALSE,}
+sv <- sva(assays(sc)$logCPM, mod, mod0)
+sv$n
+```
+
+The SVA algorithm has found `r sv$n` surrogate variables. Let's use them to assess againt the extent of differential expression this time adjusting for these surrogate variables.
+
+```{r,message=FALSE,results='hide',warning=FALSE,}
+modsv <- cbind(mod, sv$sv)
+mod0sv <- cbind(mod0, sv$sv)
+pvsv <- f.pvalue(assays(sc)$logCPM, modsv, mod0sv)
+sum(p.adjust(pvsv, method="fdr") < 0.05)
+```
+
+We have increased the number of changing genes to `r sum(p.adjust(pvsv, method="fdr") < 0.05)`.
+Figure S10 shows the resulting distribution of p-values.
+
+```{r psvdistsva, message=FALSE,warning=FALSE, echo=FALSE, out.width="600px",fig.cap="Figure S10: Distributions of raw p-values for an F-test on every gene between tumor and normal samples. The left plot corresponds to the p-value distribution without taking surrogate variable into account. In the right plot we can see the distribution when this variables are considered."}
+par(mfrow=c(1,2),mar=c(5,4,4,5))
+hist(pv, las=1, main="p-value distribution without sva", xlab="p-value",xlim=c(0,1), las=1,ylim = c(0,7000)) #distribution of pvalues
+hist(pvsv, las=1,main="p-value distribution with sva",xlab="p-value",xlim=c(0,1), las=1,ylim = c(0,7000))
+```
+
+### Notes
+
+From this initial evaluation of the data we can conclude that:
+  
+  * We have 56 paired samples (from 28 patients) with coverage higher than 40 million reads
+
+  * Our analysis with paired data shows no significant batch effects due to portion analyte, tss or technical problems (2 samples have been eliminated due to this)
+  
+  * The dendogram and MDS plot show that normal samples tend to cluster together, while tumoral samples form different clusters.
+  
+  * More than 5000 genes present differential expression in normal vs tumor samples with a p-value < 0.05. The distribution of p-values presents a high peak at lower values (p<0.05) and a long tail with very low values that stretches up to p = 1.
+
+
+As a primary insight into the data, the fold changes in gene expression between the two groups are calculated. A list of the genes with the ten biggest fold changes is shown. Note that this analysis does not take variance into account.
+```{r,message=FALSE,warning=FALSE,}
+# Fold changes
+FDRcutoff <- 0.05
+tumorExp <- rowMeans(logCPM[, sc$type == "tumor"])
+normalExp <- rowMeans(logCPM[, sc$type == "normal"])
+
+```
+
+```{r, include=FALSE}
+par(mfrow=c(1,2), mar=c(4, 4, 4, 4))
+plot(normalExp, tumorExp, xlab = "Normal", ylab = "Tumor", pch = ".")
+lines(c(1:15),c(1:15), col="red")
+plot((normalExp + tumorExp)/2, tumorExp - normalExp, xlab = "Gene mean expression", ylab = "Fold change", pch = ".")
+lines(c(1:15),rep(0,15), col="red")
+```
+
+```{r,warning=FALSE,message=FALSE}
+# top 10 DE
+log2fc <- tumorExp - normalExp #as tumorExp and normalExp are in log scale, their substraction is equal to compute the foldchange.
+ranking <- sort(abs(log2fc), decreasing = TRUE, index.return = TRUE)
+head(data.frame(Log2FC = log2fc[ranking$x], FC = 2^log2fc[ranking$x]), n = 10)
+```
+
+
+We will improve our analysis by incorporating the paired data factor, the mean-variance relationship, and the unkown covariates:
+
+```{r firstmodel, message=FALSE,results='hide',warning=FALSE, out.width="400px", fig.cap="Figure S11: voom plot."}
+# Adjust for unknown covariates
+sc$bcr_patient_barcode<-droplevels(sc$bcr_patient_barcode)
+par(mfrow=c(1,1))
+mod_sv2<-model.matrix(~sc$type+sc$bcr_patient_barcode,data=colData(sc)) # paired data
+mod0_sv2 <- model.matrix(~sc$bcr_patient_barcode, colData(sc))
+v<-voom(dge,mod_sv2,plot=TRUE)
+sv2 <- sva(v$E, mod = mod_sv2, mod0 = mod0_sv2)
+designsv <- cbind(mod_sv2, sv2$sv)
+colnames(designsv) <- c(colnames(designsv)[1:29], paste0("SV", 1:sv2$n))
+fit4<-lmFit(v,designsv)
+fit4<-eBayes(fit4)
+res4 <- decideTests(fit4, p.value = FDRcutoff)
+tt4 <- topTable(fit4, coef = 2, n = Inf)
+DEgenes <- rownames(tt4)[tt4$adj.P.Val < FDRcutoff]
+length(DEgenes) #number of DE genes.
+```
+
+We can now see the adjusted p-values distribution and the relation between the expected and actual distribution for the p-values according to this model.  
+
+```{r quality1, message=FALSE,warning=FALSE, echo=FALSE, out.width="400px", fig.cap="Figure S12: Distributions of adjusted p-values for an F-test on every gene between tumor and normal samples and QQ-plot of the t-statistics. "}
+par(mfrow = c(1, 2), mar = c(4, 5, 2, 2))
+hist(tt4$adj.P.Val, xlab = "P-values", main = "", las = 1)
+qqt(fit4$t[, 2], df = fit4$df.prior + fit4$df.residual, main = "", pch = ".", cex = 3)
+abline(0,1,lwd=2,col="red")
+
+```
+
+By plotting the boxplots of the genes, we can have a view of the distribution of gene expression in the two groups:  
+```{r cutebp, message=FALSE,warning=FALSE, echo=FALSE, out.width="600px", fig.cap="Figure S13: Boxplots of the ten lowest p-values for differencial expression. "}
+#boxplot of best p-values:
+par(mfrow=c(2,5))
+for (i in 1:10){
+  boxplot(cpm(dge$counts[rownames(tt4)[i],], log=TRUE, prior.count=0.5) ~ sc$type,main=tt4$symbol[i],ylim=c(6,18),las=2, col=c('lightskyblue3','lightsalmon'))
+}
+```
+
+The volcano plot of figure S14 shows the relation between fold change and p-value and gives a visual idea of the differences in gene expression between the two groups.
+
+```{r volcanom1, message=FALSE,warning=FALSE, out.width="400px", echo=FALSE, fig.cap="Figure S14: Volcano plot for all genes under study. The p-values come from the previous analysis where paired data, mean-variance relationship and unkonwn variables are considered. "}
+
+par(mfrow = c(1, 1))
+
+plot(tt4$logFC, -log10(tt4$P.Value), xlab = "Log2 fold-change", ylab = "-log10 P-value", 
+     pch = ".", cex = 5, col = grey(0.75), cex.axis = 1.2, cex.lab = 1.5, las = 1)
+points(tt4[tt4$adj.P.Val < 0.05, "logFC"], -log10(tt4[tt4$adj.P.Val < 0.05, "P.Value"]), pch = ".", 
+       cex = 5, col = "red")
+abline(h = -log10(max(tt4[tt4$adj.P.Val < 0.05, "P.Value"])), col = grey(0.5), lty = 2)
+
+```
+
+
+The following chunk of code show how many genes show a fold change equal or bigger than two units, and also, the mean p-values at each side of the fold change (positive and negative). The mean p-value is lower in the negative side of the fold change.
+
+```{r,message=FALSE,warning=FALSE,}
+sum(tt4$logFC<=-2) #sum ot genes with a log fold change smaller or equal than -2
+sum(tt4$logFC>=2)  #sum ot genes with a log fold change smaller or equal than 2
+mean(tt4$P.Value[tt4$logFC>0]) #mean of p-values of up-regulated tumoral genes
+mean(tt4$P.Value[tt4$logFC<0]) #mean of p-values of down-regulated tumoral genes
+```
+
+The MA-plot of figure S15 shows the differences in mean expression between tumor and normal samples in the different levels of expression:
+
+```{r mam1, message=FALSE,warning=FALSE, echo=FALSE,out.width="400px", fig.cap="Figure S15: MA-plot resulting from the previous analysis."}
+# Diagnostic plots (MA-plot)
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2))
+top7 <- order(fit4$lods[, 2], decreasing = TRUE)[1:7]
+limma::plotMA(fit4, coef = 2, status = rownames(fit4$lods) %in% DEgenes, legend = FALSE,main='MA-plot', hl.pch = 46, hl.cex = 4, bg.pch = 46, bg.cex = 3, las = 1,xlab='log mean expression',ylab='tumour-normal expression') 
+text(fit4$Amean[top7], fit4$coef[top7, 2], fit4$genes$symbol[top7], cex = 0.5, pos = 4)
+```
+
+
+A factorial design with sex and tumour condition allows us to get an insight into the different natures of tumoral processes in the two sexes.  
+```{r venn, message=FALSE,warning=FALSE, results='hide', out.width="600px", fig.cap="Figure S16: Venn diagram showing the distribution of DE genes between tumor and normal, classifying them as: male exclusive,female exclusive and independent of gender."}
+# Factorial design
+newfac <- factor(paste(sc$gender, sc$type, sep = "."))
+design <- model.matrix(~0 + newfac, colData(sc))
+fit6 <- lmFit(v, design)
+cont.matrix <- makeContrasts(men = newfacMALE.normal - newfacMALE.tumor, women =newfacFEMALE.normal - newfacFEMALE.tumor , levels = design)
+fit6 <- contrasts.fit(fit6, cont.matrix)
+fit6 <- eBayes(fit6)
+ttconmales <- topTable(fit6, coef = "men", n = Inf)
+ttconfemales <- topTable(fit6, coef = "women", n = Inf)
+res <- decideTests(fit6, p.value = 0.05)
+vennDiagram(res,circle.col=c("red","blue"))
+```
+
+
+A functional enrichment analysis of GO terms is performed. In the first run, redundancies due to hierarchy are not taken into account. 
+```{r,message=FALSE,warning=FALSE,}
+#Create a data.frame object with gene metadata (chromosome and symbol)
+library(GOstats)
+geneUniverse=rownames(sc)
+#DEgenes is a list of the significantly differential expressed genes obtainded from the analysis
+#which considered paired data, mean-variance relation and surrogate variables.
+params <- new("GOHyperGParams", geneIds=DEgenes, universeGeneIds=geneUniverse,
+              annotation="org.Hs.eg.db", ontology="BP",
+              pvalueCutoff=0.05, testDirection="over")
+hgOver <- hyperGTest(params)
+htmlReport(hgOver, file = "gotests.html")
+#browseURL("gotests.html")
+```
+
+
+In this chunk, this redundancies are considered. Furthermore, a filter is imposed to only consider GO terms with a gene size greater than 9 and an enrichment greater than 4.
+```{r,message=FALSE,warning=FALSE}
+# Conditional test
+conditional(params) <- TRUE
+hgOverCond <- hyperGTest(params)
+htmlReport(hgOver, file = "Conditional_GO_terms_sorted_by_odds_ratio.html")
+goresults <- summary(hgOverCond)
+goresults <- goresults[goresults$Size >= 10 & goresults$Count >= 5, ]
+goresults <- goresults[order(goresults$OddsRatio, decreasing = TRUE), ]
+```
+
+
+To finish this part of the analysis, the genes that enrich each GO term are included in the table.
+
+```{r,message=FALSE,warning=FALSE}
+# extract the genes that enrich each GO term and paste it to the result
+geneIDs <- geneIdsByCategory(hgOverCond)[goresults$GOBPID]
+geneSYMs <- sapply(geneIDs, function(id) select(org.Hs.eg.db, columns = "SYMBOL", key = id, 
+                                                keytype = "ENTREZID")$SYMBOL) #get the symbol annotation from their ENTREZID's
+geneSYMs <- sapply(geneSYMs, paste, collapse = ", ")
+goresults <- cbind(goresults, Genes = geneSYMs)
+rownames(goresults) <- 1:nrow(goresults)
+
+library(xtable)
+xtab <- xtable(goresults, align = "l|c|r|r|r|r|r|p{3cm}|p{3cm}|")
+print(xtab, file = "Conditional_GO_terms_sorted_by_p-value.html", type = "html")
+
+```
+
+
+##Gene set analysis
+
+Once this analysis was finished, we perform a gene set analysis. From c2BroadSets only three "subcollections" are selected: KEGG,REACTOME and BIOCARTA.
+```{r,message=FALSE,warning=FALSE,}
+library(GSEABase)
+library(GSVAdata)
+data(c2BroadSets)
+#select only three gene collections: KEGG,REACTOME and BIOCARTA
+c2BroadSets <- c2BroadSets[c(grep("^KEGG", names(c2BroadSets)),
+                             grep("^REACTOME", names(c2BroadSets)), grep("^BIOCARTA", names(c2BroadSets)))]
+gsc <- GeneSetCollection(c(c2BroadSets))
+gsc <- mapIdentifiers(gsc, AnnoOrEntrezIdentifier(metadata(sc)$annotation))
+```
+
+An incidence matrix is build where rows are gene sets and columns are gene EntrezIds. If the gene belongs to the set, a value of 1 appears in the intersection cell of this two elements, otherwise a value of 0 will be stored. Since not every gene in the default matrix is present in our study set, we discard those genes. Also, we create a temporary sc and dge objects that do not include genes not present in the incidence matrix. Reducing the number of genes diminishes multiple test correction severity.
+
+```{r,message=FALSE,warning=FALSE,}
+Im <- incidence(gsc) #Build a matrix indicating which genes are expressed in each gene set.
+Im <- Im[, colnames(Im) %in% rownames(sc)] #discard genes in the matrix that are not in our study group
+#discard genes from our original study set (rows of sc) that are not included in the c2BroadSets library (colnames(Im))
+sctemp <- sc[colnames(Im), ] 
+dgetemp <- dge[colnames(Im), ]
+```
+
+
+A new analysis is performed as the number of genes has diminished, hence making multiple testing correction less agressive.
+```{r,message=FALSE, results='hide',warning=FALSE}
+design<-model.matrix(~sctemp$type+sctemp$bcr_patient_barcode,data=colData(sctemp)) 
+v <- voom(dge, design, plot = FALSE)
+mod0 <- model.matrix(~sctemp$bcr_patient_barcode, data=colData(sctemp))
+sv <- sva(v$E, mod = design, mod0 = mod0)   
+design <- cbind(design, sv$sv)
+fit<-lmFit(v,design)
+fit<-eBayes(fit)
+tt <- topTable(fit, coef = 2, n = Inf)
+```
+
+
+A QQ-plot of the t-statistics is displayed in figure S17. Again, the almost inexistent overlap between the expected and the actual distribution points that a great number of DE genes are present.
+
+```{r gsea, message=FALSE, echo=FALSE, warning=FALSE,out.width="400px", fig.cap="Figure S17: QQ-plot for GSEA."}
+qq <- qqnorm(tt$t)
+abline(0, 1,col="red")
+chroutliers <- tt$chr[abs(tt$t) > 10]
+text(qq$x[abs(qq$y) > 10], qq$y[abs(qq$y) > 10], chroutliers, pos = 4)
+
+```
+
+We remove gene sets composed by less than 5 or more than 200:
+```{r,message=FALSE,warning=FALSE,}
+Im <- Im[rowSums(Im) >= 5 && rowSums(Im) <= 200 , ] #pick rows of Im (gene sets) whose cells values (gene presence) do not sum more than 200 and less than 5.
+```
+
+The Z value of each gene set is computed. tGSgenes correspond to the list of genes in the incidence matrix with their corresponding t-statistic.
+```{r,message=FALSE,warning=FALSE,}
+tGSgenes <- tt[match(colnames(Im), rownames(tt)), "t"] #pick the positions of the incidence matrix genes in tt table, and get the t column.
+
+zS <- sqrt(rowSums(Im)) * (as.vector(Im %*% tGSgenes)/rowSums(Im))
+#(Im %*% tGSgenes) multiplies the corresponding t-statistic of the given gene by 1 (presence in gene set) or 0 (absence).
+```
+
+We can plot the expected and actual distribution of the Z scores to get an idea of how many gene sets are DE. This is done, again, with a QQ-plot:
+
+```{r zgsea, message=FALSE,warning=FALSE, results='hide', out.width="400px", fig.cap="Figure S18: QQ-plot for GSEA using z-scores."}
+# qq plot of gene set Z-scores (gives a quick overview of how many promising gene sets could be DE)
+qqnorm(zS)
+abline(-1.5, 1,col="red")
+chroutliers <- tt$chr[abs(tt$t) > 10]
+text(qq$x[abs(qq$y) > 10], qq$y[abs(qq$y) > 10], chroutliers, pos = 4)
+```
+
+We select the first few gene sets with largest Z-score:
+```{r,message=FALSE,warning=FALSE,}
+rnkGS <- sort(abs(zS), decreasing = TRUE)
+```
+
+
+We define an R function to plot the expression of genes in a given gene set between tumor and normal samples:
+```{r,message=FALSE,warning=FALSE,}
+plotGS <- function(se, gs, pheno, ...) {
+  l <- levels(colData(se)[, pheno])
+  idxSamples1 <- colData(se)[, pheno] == l[1]
+  idxSamples2 <- colData(se)[, pheno] == l[2]
+  exps1 <- rowMeans(assays(se)$logCPM[gs, idxSamples1])
+  exps2 <- rowMeans(assays(se)$logCPM[gs, idxSamples2])
+  rng <- range(c(exps1, exps2))
+  plot(exps1, exps2, pch = 21, col = "black", bg = "black", xlim = rng, ylim = rng, 
+       xlab = "logCPM(normal)", ylab = "logCPM(tumor)", ...)
+  abline(a = 0, b = 1, lwd = 2, col = "red")
+}
+```
+
+Z-scores are transformed into adjusted p-values:
+
+```{r,message=FALSE,results='hide',warning=FALSE,}
+pv <- pmin(pnorm(zS), 1 - pnorm(zS)) 
+#pnorm(x) returns the probability that a normally distributed RANDOM number is smaller than x.
+#notice that once you have passed the mean (by default 0) the probability of finding a randomly
+#generated number bigger than the mean keeps increasing despite that you are getting far apart 
+#from the mean. That is why we need to pick the minimun between pnorm(zS) and 1 - pnorm(zS).
+sum(pv < 0.05)
+pvadj <- p.adjust(pv, method = "fdr")
+pvadj<-sort(pvadj)
+DEgs <- names(pvadj)[which(pvadj < 0.05)] #get the gene set names that have a pvalue < 0.05
+
+```
+
+A total of `r length(DEgs) ` gene sets with significant different expression were found, after multiple testing correction.
+
+Now, the best ranked gene sets according to the adjusted p-value are plotted using the previously defined function:
+
+```{r gseaZplot, message=FALSE,warning=FALSE, out.width="600px",out.height="500px", fig.cap="Figure S19: Dispersion plot of tumour vs normal samples using z-scores. Two of the sets with smallest p-value have been selected. "}
+topz1genes <- colnames(Im)[which(Im[names(pvadj)[1], ] == 1)]
+topz2genes <- colnames(Im)[which(Im[names(pvadj)[2], ] == 1)]
+par(mfrow = c(1, 2), mar = c(4, 5, 3, 4))
+plotGS(sc, topz1genes, "type", main = names(pvadj[1]), cex.lab = 2, las = 1)
+plotGS(sc, topz2genes, "type", main = names(pvadj[2]), cex.lab = 2, las = 1)
+
+```
+Values under the diagonal represent genes which are down-regulated in tumour, while genes above it represent genes that are up-regulated.
+
+As Z-test does only detect gene sets that present a major up or major down regulation of gene expression, a great number of gene sets which have a similar number of up and down regulated genes do not appear as DE. This is solved by using a Chi-square test, which needs gene sets bigger than 20 genes. Adjusted p-values are calculated.
+
+```{r,message=FALSE,warning=FALSE,}
+library(Category)
+Im2 <- Im
+Im2 <- Im2[rowSums(Im2) >= 20, ] #pick only gene sets (rows of Im2) which have more than 19 genes
+tGSgenes2 <- tt[match(colnames(Im2), rownames(tt)), "t"] 
+xS <- applyByCategory(tGSgenes2, Im2, function(x) (sum((x - mean(x))^2) - (length(x) - 1))/(2 * (length(x) - 1)))
+rnkGS <- sort(abs(xS), decreasing = TRUE) #results from Chi-Square test
+pv <- pmin(pnorm(xS), 1 - pnorm(xS)) #transform Chi-square scores into p-values
+pvadj2 <- p.adjust(pv)
+pvadj2<-sort(pvadj2)
+DEgsByScale <- names(pvadj2)[which(pvadj2 < 0.05)]
+```
+
+
+As we did with the best gene sets according to Z-scores, now we will plot the same information with the Chi-square test scores:
+
+```{r gseaChi, message=FALSE,warning=FALSE, out.width="600px", out.height="500px", fig.cap="Figure S20: Dispersion plot of tumour vs normal samples using Chi Square test. Two of the sets with smallest p-value have been selected."}
+#get genes from best ranked gene sets according to Chi-Square punctuation.
+topchi1genes <- colnames(Im2)[which(Im2[names(pvadj2)[1], ] == 1)]
+topchi2genes <- colnames(Im2)[which(Im2[names(pvadj2)[2], ] == 1)]
+par(mfrow = c(1, 2))
+plotGS(sc, topchi1genes, "type", main = names(pvadj2[1]), cex.lab = 2, las = 1)
+plotGS(sc, topchi2genes, "type", main = names(pvadj2[2]), cex.lab = 2, las = 1)
+```
+
+As we have transformed both scores (Z and Chi-square scores) to p-values, we can fuse these two results and get the best p-values of the union of both analyses.
+
+```{r,message=FALSE,warning=FALSE,}
+full_pv <- pvadj2
+for (i in seq(length(pvadj))) {
+  if ((names(pvadj[i]) %in% names(pvadj2))==FALSE) {
+    full_pv <- c(full_pv,pvadj[i])
+  } else if (((names(pvadj[i]) %in% names(pvadj2))==TRUE) && (pvadj2[[names(pvadj[i])]]<pvadj[[i]])) {
+    full_pv[(names(pvadj[i]))] <- pvadj[i]
+  }
+}
+```
+
+Now we do the same plots that we performe with both Z and Chi-square scores for our global ranking of p-values:
+
+```{r gseaFULL, message=FALSE,warning=FALSE, out.width="600px",out.height="500px",fig.cap="Figure S21: Dispersion plot of tumour vs normal samples using Chi Square test and z-scores. Two of the sets with smallest p-value have been selected."}
+full_pv<-sort(full_pv)
+fullDEgs <- names(full_pv)
+#get genes from best ranked gene sets according to both tests union.
+topgs1genes <- colnames(Im)[which(Im[names(full_pv)[1], ] == 1)]
+#names(full_pv)[1] is the name of the best gene set according to p-values
+#Im[names(full_pv)[1], ] picks only the row of the best gene set but all its columns (genes)
+#which(Im[names(full_pv)[1], ] == 1) picks only the genes of the best gene set that belong to this gene set
+#colnames(Im)[which(Im[names(full_pv)[1], ] == 1)] picks the names of this genes.
+
+topgs2genes <- colnames(Im)[which(Im[names(full_pv)[2], ] == 1)]
+par(mfrow=c(1,2))
+plotGS(sc, topgs1genes, "type", main = names(full_pv[1]), cex.lab = 2, las = 1)
+plotGS(sc, topgs2genes, "type", main = names(full_pv)[2], cex.lab = 2, las = 1)
+```
+(*) It is necessary to point out that, due to limited decimal number capacity of some packages from R, p-values smaller than 5·10^-6^ are reported as zero. Which makes ranking of smallest p-values not possible.
+
+Similar to the problem of hierarchical redundancy of GO terms, gene sets can share a big fraction of their genes. Here we have calculated this redundancy as the percentage of genes shared by pairs of gene sets.
+
+
+Please notice that we have not included the results of the following section in the report because we have found some results difficult to match with our current knowledge of cancer. 
+
+```{r,message=FALSE,results='hide',warning=FALSE,}
+# Overlaps
+library(GSVA)
+gsov <- computeGeneSetsOverlap(gsc[fullDEgs], rownames(sctemp)) # put to 0 genes not present in dataset from sets
+trimask <- upper.tri(gsov)
+rnkOv <- data.frame(gs1 = row(gsov)[trimask], gs2 = col(gsov)[trimask], ov = gsov[trimask])
+rnkOv <- rnkOv[order(rnkOv$ov, decreasing = TRUE), ] # order values (decreasing)
+rnkOv$gs1 <- rownames(gsov)[rnkOv$gs1]
+rnkOv$gs2 <- rownames(gsov)[rnkOv$gs2]
+sum(rnkOv$ov == 1)  ## how many pairs of gene sets are identical?
+sum(rnkOv$ov < 0.2)  ## how many pairs of gene sets share less than 20% of the genes?
+```
+
+There are `r sum(rnkOv$ov == 1)` pairs of gene sets which are identical and `r sum(rnkOv$ov < 0.2)` pairs of gene sets sharing less than 20% of their genes.
+
+Finally, a GSVA analysis is executed. A new model is calculated where instead of genes as features, we have gene sets. This is a change of paradigm (the dimensions of the system are changed) and allows us to detect changes in pathways even when the genes that conform the gene set are not significantly differentially expressed.
+
+```{r,message=FALSE, results='hide', warning=FALSE,}
+GSexpr <- gsva(assays(sc)$counts, gsc, rnaseq = TRUE, min.sz = 10, max.sz = 300, verbose = FALSE)$es.obs
+mod<-model.matrix(~sc$type+sc$bcr_patient_barcode,data=colData(sc))
+mod0 <- model.matrix(~sc$bcr_patient_barcode, colData(sc))
+svaobj <- sva(GSexpr,mod= mod,mod0= mod0) # Not working
+modSVs <- cbind(mod, svaobj$sv)
+fit <- lmFit(GSexpr, modSVs)
+fit <- eBayes(fit)
+ttgs <- topTable(fit, coef = 2, n = Inf)
+DEgs2 <- rownames(ttgs[ttgs$adj.P.Val < 0.05, , drop = FALSE])
+```
+
+To end this project, we show the boxplots of the gene sets with lower p-values for differential expression:  
+
+```{r gsva, message=FALSE,warning=FALSE, echo=FALSE, out.width="650px", fig.cap="Figure S22: Boxplots for the ten gene sets with lower p-value according to GSVA analysis between tumour and normal samples."}
+par(mfrow=c(2,5))
+for (i in 1:10){
+  boxplot(GSexpr[DEgs2[i], ] ~ sc$type,main=DEgs2[i],las=2, cex.main=0.6, col=c('lightskyblue3','lightsalmon'))
+}
+```
+
+## Session information
+
+```{r}
+sessionInfo()
+```

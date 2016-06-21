@@ -212,8 +212,8 @@ tt4 <- topTable(fit4, coef = 2, n = Inf)
 DEgenes <- rownames(tt4)[tt4$adj.P.Val < FDRcutoff]
 length(DEgenes) #number of DE genes.
 
-par(mfrow = c(1, 2), mar = c(4, 5, 2, 2))
-hist(tt4$P.Value, xlab = "P-values", main = "", las = 1)
+par(mfrow = c(1, 1), mar = c(4, 5, 2, 2))
+hist(tt4$adj.P.Val, xlab = "P-values", main = "", las = 1)
 qqt(fit4$t[, 2], df = fit4$df.prior + fit4$df.residual, main = "", pch = ".", cex = 3)
 abline(0,1,lwd=2,col="red")
 
@@ -370,16 +370,6 @@ plotGS <- function(se, gs, pheno, ...) {
   abline(a = 0, b = 1, lwd = 2, col = "red")
 }
 
-#pick the top 2 best ranked sets, and get gene names present in them (that is: names(rnkGS)[1] and names(rnkGS)[2]):
-#from colnames(Im) (which is a list of gene identifiers) pick only the ones which are present in the number one gene set (names(rnkGS)[1]) 
-genesGS1 <- colnames(Im)[which(Im[names(rnkGS)[1], ] == 1)] 
-genesGS2 <- colnames(Im)[which(Im[names(rnkGS)[2], ] == 1)]
-
-#plot the gene expression of the genes in the best ranked gene set spliting by type
-par(mfrow = c(1, 2), mar = c(4, 5, 3, 4))
-plotGS(sctemp, genesGS1, "type", main = names(ful)[1], cex.lab = 2, las = 1)
-plotGS(sctemp, genesGS2, "type", main = names(rnkGS)[2], cex.lab = 2, las = 1)
-
 # z-test
 pv <- pmin(pnorm(zS), 1 - pnorm(zS)) 
 #pnorm(x) returns the probability that a normally distributed RANDOM number is smaller than x!
@@ -392,6 +382,12 @@ pvadj <- p.adjust(pv, method = "fdr")
 pvadj<-sort(pvadj)
 DEgs <- names(pvadj)[which(pvadj < 0.05)] #get the gene set names that have a pvalue < 0.05
 
+#plot the gene expression of the genes in the best ranked gene set spliting by type
+topz1genes <- colnames(Im)[which(Im[names(pvadj)[1], ] == 1)]
+topz2genes <- colnames(Im)[which(Im[names(pvadj)[2], ] == 1)]
+par(mfrow = c(1, 2), mar = c(4, 5, 3, 4))
+plotGS(sc, topz1genes, "type", main = names(pvadj[1]), cex.lab = 2, las = 1)
+plotGS(sc, topz2genes, "type", main = names(pvadj[2]), cex.lab = 2, las = 1)
 
 # Chi square test, main difference is that now we do not lose those gene set that have a equal number of
 #of upregulated and downregulated genes (before: we calculated the mean of t-statistic which can result in zero. Now: sum((x - mean(x))^2) )
@@ -424,7 +420,7 @@ for (i in seq(length(pvadj))) {
 }
 
 full_pv<-sort(full_pv)
-
+fullDEgs <- names(full_pv)
 #get genes from best ranked gene sets according to both tests union.
 topgs1genes <- colnames(Im)[which(Im[names(full_pv)[1], ] == 1)]
 topgs2genes <- colnames(Im)[which(Im[names(full_pv)[2], ] == 1)]
@@ -448,8 +444,7 @@ sum(rnkOv$ov < 0.2)  ## how many pairs of gene sets share less than 20% of the g
 #GSVA analysis #########################################################3
 
 library(GSVA)
-#GSexpr <- gsva(assays(sc)$counts, gsc, rnaseq = TRUE, min.sz = 10, max.sz = 300, verbose = FALSE,method="ssgsea")$es.obs
-GSexpr <- gsva(assays(sc)$counts, gsc, rnaseq = TRUE, min.sz = 25, max.sz = 300, verbose = FALSE,kernel=FALSE)
+GSexpr <- gsva(assays(sc)$counts, gsc, rnaseq = TRUE, min.sz = 10, max.sz = 300, verbose = FALSE)$es.obs
 dim(GSexpr) # gene sets x enrichment score (ES)
 
 
